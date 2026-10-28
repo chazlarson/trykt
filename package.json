@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "pnpm run --parallel dev:web dev:worker",
+    "dev": "node scripts/dev.mjs",
     "dev:web": "next dev",
     "dev:worker": "tsx --env-file=.env src/worker.ts",
     "build": "next build",
