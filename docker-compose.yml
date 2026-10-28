@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: trykt
+      POSTGRES_PASSWORD: trykt
+      POSTGRES_DB: trykt
+    ports:
+      - "5432:5432"
+    volumes:
+      - trykt-pg:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trykt -d trykt"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  trykt-pg:

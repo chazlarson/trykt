@@ -1,0 +1,175 @@
+:root {
+  --paper: #f6f3ec;
+  --ink: #17202a;
+  --teal: #0f6e6b;
+  --clay: #c46b2e;
+  --on-teal: #f6f3ec;
+  --line: rgba(23, 32, 42, 0.16);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #141816;
+    --ink: #e7e2d6;
+    --on-teal: #e7e2d6;
+    --line: rgba(231, 226, 214, 0.18);
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+body {
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+
+a { color: inherit; }
+
+a:hover { text-decoration-thickness: 2px; }
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.shell {
+  width: min(40rem, calc(100% - 2rem));
+  margin: 0 auto;
+  padding-bottom: 4rem;
+}
+
+.bar, .footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+}
+
+.bar {
+  padding: 1.25rem 0 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand, .nav, .tools {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.nav { gap: 0.9rem; font-size: 0.95rem; }
+
+.wordmark {
+  color: inherit;
+  font-size: 1.35rem;
+  font-weight: 560;
+  letter-spacing: -0.03em;
+  text-decoration: none;
+}
+
+.stub { width: 2.1rem; height: auto; display: block; }
+
+main { padding-top: 1.5rem; }
+
+.footer {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 0.45rem;
+  font-size: 0.85rem;
+}
+
+.footer .brand .wordmark { font-size: 1rem; }
+.footer .stub { width: 1.4rem; }
+
+.tmdb-logo { height: 0.85rem; width: auto; }
+
+h1 { font-size: 1.7rem; font-weight: 560; letter-spacing: -0.03em; margin: 0 0 0.4rem; }
+h2 { font-size: 1.15rem; font-weight: 560; margin: 1.6rem 0 0.5rem; }
+p { margin: 0.4rem 0; }
+
+.stack { display: flex; flex-direction: column; gap: 0.8rem; }
+.row { display: flex; gap: 1rem; align-items: flex-start; }
+.spread { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; }
+.meta { color: var(--ink); font-size: 0.92rem; }
+.score { color: var(--clay); font-variant-numeric: tabular-nums; }
+
+.poster {
+  width: 6.5rem;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  background: color-mix(in srgb, var(--ink) 6%, var(--paper));
+  border: 1px solid var(--line);
+  flex: none;
+}
+
+.poster.empty {
+  display: grid;
+  place-items: center;
+  font-size: 0.75rem;
+  text-align: center;
+  padding: 0.4rem;
+}
+
+.poster.small { width: 3rem; }
+
+.button, button, .linkish {
+  font: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  padding: 0.45rem 0.75rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button.primary, button.primary {
+  background: var(--teal);
+  color: var(--on-teal);
+  border-color: var(--teal);
+}
+
+label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.92rem; }
+
+input, select, textarea {
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  padding: 0.45rem 0.55rem;
+}
+
+textarea { min-height: 5rem; }
+
+.search { display: flex; gap: 0.4rem; align-items: center; }
+.search input { width: 11rem; }
+
+.item, .episode, .season {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; }
+
+.notice { margin: 0.6rem 0 1rem; }
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
