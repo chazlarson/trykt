@@ -6,7 +6,23 @@ import type { Match, Resolver } from "./resolve";
 
 const FLUSH = 200;
 
-export async function applyImport(userId: string, parsed: ParsedExport, resolver: Resolver): Promise<ImportErrorReport> {
+export function importMeasure(parsed: ParsedExport): { start: number; total: number } {
+  const pending =
+    parsed.plays.length +
+    parsed.ratings.length +
+    parsed.watchlist.length +
+    parsed.shelf.length +
+    parsed.lists.reduce((sum, list) => sum + list.items.length, 0);
+  const start = parsed.unmatched.length + parsed.notesSkipped;
+  return { start, total: start + pending };
+}
+
+export async function applyImport(
+  userId: string,
+  parsed: ParsedExport,
+  resolver: Resolver,
+  onProgress?: (done: number, total: number) => Promise<void> | void,
+): Promise<ImportErrorReport> {
   const unmatched = [...parsed.unmatched];
   const counts = {
     plays: 0,
@@ -17,11 +33,18 @@ export async function applyImport(userId: string, parsed: ParsedExport, resolver
     shelf: 0,
     notes_skipped: parsed.notesSkipped,
   };
-  await applyPlays(userId, parsed, resolver, unmatched, counts);
-  await applyRatings(userId, parsed, resolver, unmatched, counts);
-  await applyWatchlist(userId, parsed, resolver, unmatched, counts);
-  await applyLists(userId, parsed, resolver, unmatched, counts);
-  await applyShelf(userId, parsed, resolver, unmatched, counts);
+  const measure = importMeasure(parsed);
+  let done = measure.start;
+  const step = async () => {
+    done += 1;
+    await onProgress?.(done, measure.total);
+  };
+  await onProgress?.(done, measure.total);
+  await applyPlays(userId, parsed, resolver, unmatched, counts, step);
+  await applyRatings(userId, parsed, resolver, unmatched, counts, step);
+  await applyWatchlist(userId, parsed, resolver, unmatched, counts, step);
+  await applyLists(userId, parsed, resolver, unmatched, counts, step);
+  await applyShelf(userId, parsed, resolver, unmatched, counts, step);
   return {
     parser: "import_v1",
     failure: null,
@@ -37,6 +60,7 @@ async function applyPlays(
   resolver: Resolver,
   unmatched: ImportErrorReport["unmatched"],
   counts: ImportErrorReport["counts"],
+  step: () => Promise<void>,
 ) {
   const db = getDb();
   const existing = await db
@@ -54,31 +78,35 @@ async function applyPlays(
   const pending: (typeof plays.$inferInsert)[] = [];
   const ordered = [...parsed.plays].sort((left, right) => left.watchedAt.localeCompare(right.watchedAt));
   for (const item of ordered) {
-    const match =
-      item.kind === "movie"
-        ? await resolver.movie(item.ids, item)
-        : await resolver.episode(item.ids, item.seasonNumber ?? 0, item.episodeNumber ?? 0, item.episodeIds, item);
-    if (!match.ok) {
-      unmatched.push({ title: item.title || "Untitled", year: item.year, reason: match.reason });
-      continue;
+    try {
+      const match =
+        item.kind === "movie"
+          ? await resolver.movie(item.ids, item)
+          : await resolver.episode(item.ids, item.seasonNumber ?? 0, item.episodeNumber ?? 0, item.episodeIds, item);
+      if (!match.ok) {
+        unmatched.push({ title: item.title || "Untitled", year: item.year, reason: match.reason });
+        continue;
+      }
+      const key = `${item.kind}:${match.id}`;
+      const stamps = seen.get(key) ?? [];
+      const watchedAt = new Date(item.watchedAt);
+      const stamp = watchedAt.getTime();
+      if (stamps.includes(stamp)) continue;
+      pending.push({
+        userId,
+        movieId: item.kind === "movie" ? match.id : null,
+        episodeId: item.kind === "episode" ? match.id : null,
+        watchedAt,
+        source: "import",
+        rewatch: stamps.some((time) => time < stamp),
+      });
+      stamps.push(stamp);
+      seen.set(key, stamps);
+      counts.plays += 1;
+      if (pending.length >= FLUSH) await flushPlays(pending);
+    } finally {
+      await step();
     }
-    const key = `${item.kind}:${match.id}`;
-    const stamps = seen.get(key) ?? [];
-    const watchedAt = new Date(item.watchedAt);
-    const stamp = watchedAt.getTime();
-    if (stamps.includes(stamp)) continue;
-    pending.push({
-      userId,
-      movieId: item.kind === "movie" ? match.id : null,
-      episodeId: item.kind === "episode" ? match.id : null,
-      watchedAt,
-      source: "import",
-      rewatch: stamps.some((time) => time < stamp),
-    });
-    stamps.push(stamp);
-    seen.set(key, stamps);
-    counts.plays += 1;
-    if (pending.length >= FLUSH) await flushPlays(pending);
   }
   await flushPlays(pending);
 }
@@ -95,28 +123,33 @@ async function applyRatings(
   resolver: Resolver,
   unmatched: ImportErrorReport["unmatched"],
   counts: ImportErrorReport["counts"],
+  step: () => Promise<void>,
 ) {
   const db = getDb();
   for (const item of parsed.ratings) {
-    const match = await matchRating(item, resolver);
-    if (!match.ok) {
-      unmatched.push({ title: item.title || "Untitled", year: item.year, reason: match.reason });
-      continue;
+    try {
+      const match = await matchRating(item, resolver);
+      if (!match.ok) {
+        unmatched.push({ title: item.title || "Untitled", year: item.year, reason: match.reason });
+        continue;
+      }
+      const updatedAt = item.ratedAt ? new Date(item.ratedAt) : new Date();
+      const [existing] = await db
+        .select({ updatedAt: ratings.updatedAt })
+        .from(ratings)
+        .where(and(eq(ratings.userId, userId), eq(ratings.subjectType, item.subject), eq(ratings.subjectId, match.id)));
+      if (existing && existing.updatedAt.getTime() > updatedAt.getTime()) continue;
+      await db
+        .insert(ratings)
+        .values({ userId, subjectType: item.subject, subjectId: match.id, score: item.score, updatedAt })
+        .onConflictDoUpdate({
+          target: [ratings.userId, ratings.subjectType, ratings.subjectId],
+          set: { score: item.score, updatedAt },
+        });
+      counts.ratings += 1;
+    } finally {
+      await step();
     }
-    const updatedAt = item.ratedAt ? new Date(item.ratedAt) : new Date();
-    const [existing] = await db
-      .select({ updatedAt: ratings.updatedAt })
-      .from(ratings)
-      .where(and(eq(ratings.userId, userId), eq(ratings.subjectType, item.subject), eq(ratings.subjectId, match.id)));
-    if (existing && existing.updatedAt.getTime() > updatedAt.getTime()) continue;
-    await db
-      .insert(ratings)
-      .values({ userId, subjectType: item.subject, subjectId: match.id, score: item.score, updatedAt })
-      .onConflictDoUpdate({
-        target: [ratings.userId, ratings.subjectType, ratings.subjectId],
-        set: { score: item.score, updatedAt },
-      });
-    counts.ratings += 1;
   }
 }
 
@@ -133,6 +166,7 @@ async function applyWatchlist(
   resolver: Resolver,
   unmatched: ImportErrorReport["unmatched"],
   counts: ImportErrorReport["counts"],
+  step: () => Promise<void>,
 ) {
   const db = getDb();
   const current = await db
@@ -154,6 +188,7 @@ async function applyWatchlist(
       position += 1;
     });
     if (saved) counts.watchlist += 1;
+    await step();
   }
 }
 
@@ -163,6 +198,7 @@ async function applyLists(
   resolver: Resolver,
   unmatched: ImportErrorReport["unmatched"],
   counts: ImportErrorReport["counts"],
+  step: () => Promise<void>,
 ) {
   const db = getDb();
   const owned = await db.select({ id: lists.id, name: lists.name }).from(lists).where(eq(lists.ownerId, userId));
@@ -170,12 +206,16 @@ async function applyLists(
   for (const list of parsed.lists) {
     const matched: { kind: "movie" | "show"; id: string; at: string | null; note: string | null }[] = [];
     for (const item of list.items) {
-      const match = item.kind === "movie" ? await resolver.movie(item.ids, item) : await resolver.show(item.ids, item);
-      if (!match.ok) {
-        unmatched.push({ title: item.title || "Untitled", year: item.year, reason: match.reason });
-        continue;
+      try {
+        const match = item.kind === "movie" ? await resolver.movie(item.ids, item) : await resolver.show(item.ids, item);
+        if (!match.ok) {
+          unmatched.push({ title: item.title || "Untitled", year: item.year, reason: match.reason });
+          continue;
+        }
+        matched.push({ kind: item.kind, id: match.id, at: item.at, note: item.note });
+      } finally {
+        await step();
       }
-      matched.push({ kind: item.kind, id: match.id, at: item.at, note: item.note });
     }
     if (list.items.length > 0 && matched.length === 0) continue;
     let listId = byName.get(list.name);
@@ -231,6 +271,7 @@ async function applyShelf(
   resolver: Resolver,
   unmatched: ImportErrorReport["unmatched"],
   counts: ImportErrorReport["counts"],
+  step: () => Promise<void>,
 ) {
   const db = getDb();
   const current = await db
@@ -240,29 +281,33 @@ async function applyShelf(
   const movies = new Set(current.map((row) => row.movieId).filter((id): id is string => Boolean(id)));
   const episodesOwned = new Set(current.map((row) => row.episodeId).filter((id): id is string => Boolean(id)));
   for (const item of parsed.shelf) {
-    const match =
-      item.kind === "movie"
-        ? await resolver.movie(item.ids, item)
-        : await resolver.episode(item.ids, item.seasonNumber ?? 0, item.episodeNumber ?? 0, item.episodeIds, item);
-    if (!match.ok) {
-      unmatched.push({ title: item.title || "Untitled", year: item.year, reason: match.reason });
-      continue;
-    }
-    const have = item.kind === "movie" ? movies : episodesOwned;
-    if (have.has(match.id)) continue;
     try {
-      await db.insert(shelfItems).values({
-        userId,
-        movieId: item.kind === "movie" ? match.id : null,
-        episodeId: item.kind === "episode" ? match.id : null,
-        addedAt: atOrNow(item.at),
-      });
-    } catch (error) {
-      if (isUniqueViolation(error)) continue;
-      throw error;
+      const match =
+        item.kind === "movie"
+          ? await resolver.movie(item.ids, item)
+          : await resolver.episode(item.ids, item.seasonNumber ?? 0, item.episodeNumber ?? 0, item.episodeIds, item);
+      if (!match.ok) {
+        unmatched.push({ title: item.title || "Untitled", year: item.year, reason: match.reason });
+        continue;
+      }
+      const have = item.kind === "movie" ? movies : episodesOwned;
+      if (have.has(match.id)) continue;
+      try {
+        await db.insert(shelfItems).values({
+          userId,
+          movieId: item.kind === "movie" ? match.id : null,
+          episodeId: item.kind === "episode" ? match.id : null,
+          addedAt: atOrNow(item.at),
+        });
+      } catch (error) {
+        if (isUniqueViolation(error)) continue;
+        throw error;
+      }
+      have.add(match.id);
+      counts.shelf += 1;
+    } finally {
+      await step();
     }
-    have.add(match.id);
-    counts.shelf += 1;
   }
 }
 

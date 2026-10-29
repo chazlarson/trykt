@@ -1,4 +1,4 @@
-import { deleteAccountAction, forgotPasswordAction, signOutAction } from "@/actions";
+import { clearImportAction, deleteAccountAction, forgotPasswordAction, signOutAction } from "@/actions";
 import { Notice } from "@/components/notice";
 import type { ImportErrorReport } from "@/db/schema";
 import { latestImport } from "@/import/store";
@@ -7,6 +7,26 @@ import { requireUser, usernameOf } from "@/session";
 function counted(count: number, one: string, many: string): string {
   if (count === 0) return "";
   return `${count} ${count === 1 ? one : many}`;
+}
+
+function progressLabel(status: string, done: number, total: number): string | null {
+  if (status === "queued") return "Import is queued.";
+  if (status === "running" && total === 0) return "Reading the file.";
+  if (total === 0) return null;
+  return `${done} of ${total}.`;
+}
+
+function ImportProgress({ status, done, total }: { status: string; done: number; total: number }) {
+  const reading = status === "running" && total === 0;
+  const max = total > 0 ? total : 1;
+  const value = status === "queued" || reading ? 0 : Math.min(done, max);
+  const label = progressLabel(status, value, total);
+  return (
+    <div className="stack">
+      <progress className="progress" value={value} max={max} aria-label="Import progress">{label}</progress>
+      {label ? <p className="meta progress-label">{label}</p> : null}
+    </div>
+  );
 }
 
 function countLine(report: ImportErrorReport): string {
@@ -43,8 +63,13 @@ export default async function AccountPage({
       </p>
       <h2>Import</h2>
       <p>Upload a ZIP of your own log export. Movies and shows match on TMDB or IMDb ids. The file is deleted when the import finishes.</p>
+      {busy && job ? (
+        <ImportProgress status={job.status} done={job.progressDone} total={job.progressTotal} />
+      ) : null}
       {busy ? (
-        <p>{job?.status === "running" ? "Import is running." : "Import is queued."}</p>
+        <form action={clearImportAction}>
+          <button type="submit">Clear import</button>
+        </form>
       ) : (
         <form className="stack" action="/api/import" method="post" encType="multipart/form-data">
           <label>

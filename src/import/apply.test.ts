@@ -1,17 +1,18 @@
 import { eq } from "drizzle-orm";
 import { zipSync, strToU8 } from "fflate";
 import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deleteUserAccount } from "../account";
 import { fetchMovie, fetchSeason, fetchShow, findByImdb } from "../catalog/tmdb";
 import { getDb } from "../db";
 import { episodes, importJobs, lists, plays, ratings, seasons, shelfItems, titles, users, watchlistItems } from "../db/schema";
 import * as apply from "./apply";
-import { applyImport } from "./apply";
-import { runImportJob } from "./job";
+import { applyImport, importMeasure } from "./apply";
+import { resumeImports, runImportJob } from "./job";
 import { parseExportZip } from "./parser";
 import { createCatalogResolver } from "./resolve";
-import { acceptImport, importForOwner, importZipPath } from "./store";
+import { acceptImport, clearImports, importForOwner, importZipPath, importsToResume, markFinished, markRunning, setImportProgress } from "./store";
 
 vi.mock("../catalog/tmdb", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../catalog/tmdb")>();
@@ -197,6 +198,8 @@ describe("applyImport", () => {
     const owned = await importForOwner(userId, jobId);
     expect(owned?.status).toBe("finished");
     expect(owned?.errorReport?.counts.plays).toBe(1);
+    expect(owned?.progressDone).toBe(1);
+    expect(owned?.progressTotal).toBe(1);
     expect(await importForOwner(otherId, jobId)).toBeNull();
     const playRows = await getDb().select().from(plays).where(eq(plays.userId, userId));
     expect(playRows).toHaveLength(1);
@@ -310,6 +313,107 @@ describe("applyImport", () => {
     expect(done?.status).toBe("failed");
     expect(done?.errorReport?.failure).toBe("Import failed. Try the file again.");
     expect(existsSync(importZipPath(jobId))).toBe(false);
+    const next = await acceptImport(userId, bytes);
+    expect(next).not.toBe(jobId);
+  });
+
+  it("reports each row in the file, including rows settled while reading", async () => {
+    const userId = await user("counter");
+    const parsed = parseExportZip(
+      zipOf({
+        "comments-movies.json": [{ comment: { comment: "a note" } }],
+        "watched-history-1.json": [
+          { type: "movie", movie: { title: "No Numbers", year: 1991 } },
+          { watched_at: "2014-01-02T00:00:00.000Z", type: "movie", movie: { title: "Paper Moon", year: 1973, ids: { tmdb: 18131 } } },
+        ],
+      }),
+    );
+    expect(importMeasure(parsed)).toEqual({ start: 2, total: 3 });
+    const ticks: number[] = [];
+    await applyImport(userId, parsed, createCatalogResolver(), (done, total) => {
+      ticks.push(done);
+      expect(total).toBe(3);
+    });
+    expect(ticks).toEqual([2, 3]);
+  });
+
+  it("resumes a queued or running import that still has its file", async () => {
+    const queuedUser = await user("queued");
+    const runningUser = await user("running");
+    const bytes = zipOf({
+      "watched-history-1.json": [
+        { watched_at: "2014-01-01T00:00:00.000Z", type: "movie", movie: { title: "Paper Moon", year: 1973, ids: { tmdb: 18131 } } },
+      ],
+    });
+    const queued = await acceptImport(queuedUser, bytes);
+    const running = await acceptImport(runningUser, bytes);
+    await markRunning(running);
+    await setImportProgress(running, 1, 4);
+    const sent: string[] = [];
+    await resumeImports(async (jobId) => {
+      sent.push(jobId);
+      return jobId;
+    });
+    expect(sent.sort()).toEqual([queued, running].sort());
+    expect(await importForOwner(queuedUser, queued)).toMatchObject({ status: "queued", progressDone: 0, progressTotal: 0 });
+    expect(await importForOwner(runningUser, running)).toMatchObject({ status: "queued", progressDone: 0, progressTotal: 0 });
+    expect(existsSync(importZipPath(queued))).toBe(true);
+    expect(existsSync(importZipPath(running))).toBe(true);
+  });
+
+  it("fails a queued import whose file is already gone, and one that cannot be queued again", async () => {
+    const goneUser = await user("gone");
+    const blockedUser = await user("blocked");
+    const bytes = zipOf({
+      "watched-history-1.json": [
+        { watched_at: "2014-01-01T00:00:00.000Z", type: "movie", movie: { title: "Paper Moon", year: 1973, ids: { tmdb: 18131 } } },
+      ],
+    });
+    const gone = await acceptImport(goneUser, bytes);
+    await rm(importZipPath(gone));
+    const blocked = await acceptImport(blockedUser, bytes);
+    const ids = await importsToResume();
+    expect(ids).toEqual([blocked]);
+    expect(await importForOwner(goneUser, gone)).toMatchObject({
+      status: "failed",
+      errorReport: expect.objectContaining({ failure: "The file was already removed." }),
+    });
+    await resumeImports(async () => null);
+    expect(await importForOwner(blockedUser, blocked)).toMatchObject({
+      status: "failed",
+      errorReport: expect.objectContaining({ failure: "Import failed. Try the file again." }),
+    });
+    expect(existsSync(importZipPath(blocked))).toBe(false);
+    expect(await acceptImport(goneUser, bytes)).not.toBe(gone);
+    expect(await acceptImport(blockedUser, bytes)).not.toBe(blocked);
+  });
+
+  it("clears a stuck import so another one can start", async () => {
+    const userId = await user("clear");
+    const otherId = await user("keep");
+    const bytes = zipOf({
+      "watched-history-1.json": [
+        { watched_at: "2014-01-01T00:00:00.000Z", type: "movie", movie: { title: "Paper Moon", year: 1973, ids: { tmdb: 18131 } } },
+      ],
+    });
+    const jobId = await acceptImport(userId, bytes);
+    await markRunning(jobId);
+    const otherJob = await acceptImport(otherId, bytes);
+    await clearImports(userId);
+    const cleared = await importForOwner(userId, jobId);
+    expect(cleared?.status).toBe("failed");
+    expect(cleared?.errorReport?.failure).toBe("Import cleared.");
+    expect(existsSync(importZipPath(jobId))).toBe(false);
+    expect(await importForOwner(otherId, otherJob)).toMatchObject({ status: "queued" });
+    expect(existsSync(importZipPath(otherJob))).toBe(true);
+    await markFinished(jobId, {
+      parser: "import_v1",
+      failure: null,
+      unmatched: [],
+      counts: { plays: 1, ratings: 0, watchlist: 0, lists: 0, list_items: 0, shelf: 0, notes_skipped: 0 },
+      files: [],
+    });
+    expect(await importForOwner(userId, jobId)).toMatchObject({ status: "failed" });
     const next = await acceptImport(userId, bytes);
     expect(next).not.toBe(jobId);
   });

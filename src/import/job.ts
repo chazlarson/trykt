@@ -4,7 +4,16 @@ import postgres from "postgres";
 import { applyImport } from "./apply";
 import { parseExportZip, ZipRejected } from "./parser";
 import { createCatalogResolver } from "./resolve";
-import { importZipPath, loadImport, markFailed, markFinished, markRunning } from "./store";
+import {
+  deleteImportFiles,
+  importZipPath,
+  importsToResume,
+  loadImport,
+  markFailed,
+  markFinished,
+  markRunning,
+  setImportProgress,
+} from "./store";
 
 export type ImportAttempt = {
   retryCount: number;
@@ -42,10 +51,18 @@ async function runUnlocked(jobId: string, attempt: ImportAttempt) {
   try {
     const bytes = new Uint8Array(await readFile(file));
     const parsed = parseExportZip(bytes);
-    const report = await applyImport(job.userId, parsed, createCatalogResolver());
+    const report = await applyImport(job.userId, parsed, createCatalogResolver(), progressFor(jobId));
+    if (!(await stillOpen(jobId))) {
+      remove = true;
+      return;
+    }
     await markFinished(jobId, report);
     remove = true;
   } catch (error) {
+    if (!(await stillOpen(jobId))) {
+      remove = true;
+      return;
+    }
     if (error instanceof ZipRejected) {
       await markFailed(jobId, error.message);
       remove = true;
@@ -57,4 +74,36 @@ async function runUnlocked(jobId: string, attempt: ImportAttempt) {
   } finally {
     if (remove) await rm(file, { force: true });
   }
+}
+
+export async function resumeImports(enqueue: (jobId: string) => Promise<string | null>): Promise<void> {
+  for (const jobId of await importsToResume()) {
+    let sent: string | null = null;
+    try {
+      sent = await enqueue(jobId);
+    } catch {
+      sent = null;
+    }
+    if (sent) continue;
+    await markFailed(jobId, EXHAUSTED);
+    await deleteImportFiles([jobId]);
+  }
+}
+
+async function stillOpen(jobId: string): Promise<boolean> {
+  const current = await loadImport(jobId);
+  return current?.status === "queued" || current?.status === "running";
+}
+
+function progressFor(jobId: string) {
+  let lastDone = -1;
+  let lastAt = 0;
+  return async (done: number, total: number) => {
+    const now = Date.now();
+    const due = lastDone < 0 || done === total || done - lastDone >= 25 || now - lastAt >= 500;
+    if (!due) return;
+    lastDone = done;
+    lastAt = now;
+    await setImportProgress(jobId, done, total);
+  };
 }

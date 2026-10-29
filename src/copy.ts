@@ -30,6 +30,7 @@ const messages: Record<string, string> = {
   "import-queued": "Import started. This page updates until it finishes.",
   "import-failed": "Import failed. Try the file again.",
   "import-rate": "Too many imports. Wait and try again.",
+  "import-cleared": "Import cleared. You can upload the file again.",
 };
 
 export type NoticeCode = keyof typeof messages;

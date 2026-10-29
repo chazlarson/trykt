@@ -349,6 +349,8 @@ export const importJobs = pgTable(
     status: text("status").notNull(),
     parser: text("parser").notNull().default("import_v1"),
     errorReport: jsonb("error_report").$type<ImportErrorReport>(),
+    progressDone: integer("progress_done").notNull().default(0),
+    progressTotal: integer("progress_total").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
@@ -356,6 +358,10 @@ export const importJobs = pgTable(
     index("import_jobs_user_created_idx").on(table.userId, table.createdAt),
     check("import_jobs_status_chk", sql`${table.status} in ('queued', 'running', 'finished', 'failed')`),
     check("import_jobs_parser_chk", sql`${table.parser} = 'import_v1'`),
+    check(
+      "import_jobs_progress_chk",
+      sql`${table.progressDone} >= 0 and ${table.progressTotal} >= 0 and ${table.progressDone} <= ${table.progressTotal}`,
+    ),
   ],
 );
 

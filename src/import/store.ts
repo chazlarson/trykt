@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -76,6 +77,13 @@ export async function acceptImport(userId: string, bytes: Uint8Array): Promise<s
   return job.id;
 }
 
+export async function setImportProgress(jobId: string, done: number, total: number) {
+  await getDb()
+    .update(importJobs)
+    .set({ progressDone: done, progressTotal: total })
+    .where(and(eq(importJobs.id, jobId), eq(importJobs.status, "running")));
+}
+
 export async function markRunning(jobId: string) {
   await getDb()
     .update(importJobs)
@@ -87,7 +95,7 @@ export async function markFinished(jobId: string, report: ImportErrorReport) {
   await getDb()
     .update(importJobs)
     .set({ status: "finished", errorReport: report, finishedAt: new Date() })
-    .where(eq(importJobs.id, jobId));
+    .where(and(eq(importJobs.id, jobId), eq(importJobs.status, "running")));
 }
 
 export async function markFailed(jobId: string, failure: string) {
@@ -104,13 +112,40 @@ export async function markFailed(jobId: string, failure: string) {
     .where(and(eq(importJobs.id, jobId), inArray(importJobs.status, ["queued", "running", "failed"])));
 }
 
-export async function interruptedJobIds(): Promise<string[]> {
+const REMOVED = "The file was already removed.";
+const CLEARED = "Import cleared.";
+
+export async function importsToResume(): Promise<string[]> {
   const rows = await getDb()
-    .update(importJobs)
-    .set({ status: "queued" })
-    .where(eq(importJobs.status, "running"))
-    .returning({ id: importJobs.id });
-  return rows.map((row) => row.id);
+    .select({ id: importJobs.id })
+    .from(importJobs)
+    .where(inArray(importJobs.status, ["queued", "running"]));
+  const resume: string[] = [];
+  for (const row of rows) {
+    if (!existsSync(importZipPath(row.id))) {
+      await markFailed(row.id, REMOVED);
+      continue;
+    }
+    resume.push(row.id);
+  }
+  if (resume.length > 0) {
+    await getDb()
+      .update(importJobs)
+      .set({ status: "queued", progressDone: 0, progressTotal: 0 })
+      .where(and(inArray(importJobs.id, resume), inArray(importJobs.status, ["queued", "running"])));
+  }
+  return resume;
+}
+
+export async function clearImports(userId: string): Promise<string[]> {
+  const rows = await getDb()
+    .select({ id: importJobs.id })
+    .from(importJobs)
+    .where(and(eq(importJobs.userId, userId), inArray(importJobs.status, ["queued", "running"])));
+  const ids = rows.map((row) => row.id);
+  for (const id of ids) await markFailed(id, CLEARED);
+  await deleteImportFiles(ids);
+  return ids;
 }
 
 export async function deleteImportFiles(jobIds: string[]) {

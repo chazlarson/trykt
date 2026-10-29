@@ -15,6 +15,7 @@ import {
   removeWatchlistItem,
   setRating,
 } from "./library";
+import { clearImports } from "./import/store";
 import { logMutation } from "./log";
 import { clearManualEpisodePlays, logEpisode, logMovie, logSeason, removePlay } from "./plays";
 import {
@@ -96,6 +97,13 @@ export async function signInAction(formData: FormData) {
     redirectTo("/sign-in", statusCode(error) === 403 ? "verify" : "sign-in", "error");
   }
   redirectTo("/", undefined);
+}
+
+export async function clearImportAction() {
+  const session = await requireUser();
+  await clearImports(session.user.id);
+  logMutation("import.clear", 200, session.user.id);
+  redirectTo("/account", "import-cleared");
 }
 
 export async function signOutAction() {
