@@ -1,0 +1,43 @@
+{
+  "name": "trykt",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "next dev",
+    "dev:worker": "tsx --env-file=.env src/worker.ts",
+    "build": "next build",
+    "start": "next start",
+    "worker": "tsx --env-file=.env src/worker.ts",
+    "db:migrate": "tsx --env-file=.env src/db/migrate.ts",
+    "db:reset": "tsx --env-file=.env src/db/reset.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "1.7.14",
+    "better-auth": "1.7.14",
+    "drizzle-orm": "0.45.4",
+    "next": "16.4.3",
+    "pg-boss": "12.38.0",
+    "postgres": "3.4.9",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "zod": "4.6.7"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "devDependencies": {
+    "@types/node": "22.19.1",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  }
+}
