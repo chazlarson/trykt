@@ -9,12 +9,14 @@ import {
   ratings,
   resumePoints,
   sessions,
+  importJobs,
   shelfItems,
   titles,
   users,
   verifications,
   watchlistItems,
 } from "./db/schema";
+import { deleteImportFiles } from "./import/store";
 
 type Media = { id: string; name: string; year: number | null; tmdb_id: number };
 
@@ -67,6 +69,13 @@ export type TryktExport = {
     id: string;
     added_at: string;
     movie: Media | null;
+    episode: {
+      id: string;
+      name: string;
+      season_number: number;
+      episode_number: number;
+      show: Media;
+    } | null;
   }>;
 };
 
@@ -91,7 +100,10 @@ export async function exportUser(userId: string): Promise<TryktExport> {
     : [];
   const shelfRows = await db.select().from(shelfItems).where(eq(shelfItems.userId, userId)).orderBy(desc(shelfItems.addedAt));
 
-  const episodeIds = playRows.map((row) => row.episodeId).filter((id): id is string => Boolean(id));
+  const episodeIds = [
+    ...playRows.map((row) => row.episodeId),
+    ...shelfRows.map((row) => row.episodeId),
+  ].filter((id): id is string => Boolean(id));
   const episodeRows = episodeIds.length
     ? await db.select().from(episodes).where(inArray(episodes.id, episodeIds))
     : [];
@@ -108,7 +120,9 @@ export async function exportUser(userId: string): Promise<TryktExport> {
     if (row.movieId) titleIds.add(row.movieId);
     if (row.showId) titleIds.add(row.showId);
   }
-  for (const row of shelfRows) if (row.movieId) titleIds.add(row.movieId);
+  for (const row of shelfRows) {
+    if (row.movieId) titleIds.add(row.movieId);
+  }
   const titleRows = titleIds.size
     ? await db
         .select({
@@ -176,11 +190,25 @@ export async function exportUser(userId: string): Promise<TryktExport> {
           show: item.showId ? media(titleById.get(item.showId)) : null,
         })),
     })),
-    shelf: shelfRows.map((row) => ({
-      id: row.id,
-      added_at: row.addedAt.toISOString(),
-      movie: row.movieId ? media(titleById.get(row.movieId)) : null,
-    })),
+    shelf: shelfRows.map((row) => {
+      const episode = row.episodeId ? episodeById.get(row.episodeId) : undefined;
+      const show = episode ? titleById.get(episode.showId) : undefined;
+      return {
+        id: row.id,
+        added_at: row.addedAt.toISOString(),
+        movie: row.movieId ? media(titleById.get(row.movieId)) : null,
+        episode:
+          episode && show
+            ? {
+                id: episode.id,
+                name: episode.name,
+                season_number: episode.seasonNumber,
+                episode_number: episode.episodeNumber,
+                show: media(show)!,
+              }
+            : null,
+      };
+    }),
   };
 }
 
@@ -188,7 +216,11 @@ export async function deleteUserAccount(userId: string) {
   const db = getDb();
   const [person] = await db.select({ email: users.email }).from(users).where(eq(users.id, userId));
   if (!person) return;
+  let jobIds: string[] = [];
   await db.transaction(async (tx) => {
+    const jobs = await tx.select({ id: importJobs.id }).from(importJobs).where(eq(importJobs.userId, userId));
+    jobIds = jobs.map((job) => job.id);
+    if (jobIds.length > 0) await tx.delete(importJobs).where(eq(importJobs.userId, userId));
     const owned = await tx.select({ id: lists.id }).from(lists).where(eq(lists.ownerId, userId));
     const listIds = owned.map((list) => list.id);
     if (listIds.length > 0) {
@@ -207,4 +239,5 @@ export async function deleteUserAccount(userId: string) {
       .where(or(eq(verifications.value, userId), eq(verifications.identifier, person.email)));
     await tx.delete(users).where(eq(users.id, userId));
   });
+  await deleteImportFiles(jobIds);
 }

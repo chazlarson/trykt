@@ -307,12 +307,16 @@ export async function listShelf(userId: string) {
       id: shelfItems.id,
       addedAt: shelfItems.addedAt,
       movieId: shelfItems.movieId,
+      episodeId: shelfItems.episodeId,
     })
     .from(shelfItems)
     .where(eq(shelfItems.userId, userId))
     .orderBy(desc(shelfItems.addedAt));
-  const ids = rows.map((row) => row.movieId).filter((id): id is string => Boolean(id));
-  const titleRows = ids.length
+  const movieIds = rows.map((row) => row.movieId).filter((id): id is string => Boolean(id));
+  const episodeIds = rows.map((row) => row.episodeId).filter((id): id is string => Boolean(id));
+  const episodeRows = episodeIds.length ? await db.select().from(episodes).where(inArray(episodes.id, episodeIds)) : [];
+  const showIds = episodeRows.map((row) => row.showId);
+  const titleRows = [...movieIds, ...showIds].length
     ? await db
         .select({
           id: titles.id,
@@ -321,12 +325,28 @@ export async function listShelf(userId: string) {
           tmdbId: titles.tmdbId,
         })
         .from(titles)
-        .where(inArray(titles.id, ids))
+        .where(inArray(titles.id, [...movieIds, ...showIds]))
     : [];
   const byId = new Map(titleRows.map((row) => [row.id, row]));
-  return rows.map((row) => ({
-    id: row.id,
-    addedAt: row.addedAt,
-    movie: row.movieId ? toMedia(byId.get(row.movieId)) : null,
-  }));
+  const episodeById = new Map(episodeRows.map((row) => [row.id, row]));
+  return rows.map((row) => {
+    const episode = row.episodeId ? episodeById.get(row.episodeId) : undefined;
+    const show = episode ? byId.get(episode.showId) : undefined;
+    return {
+      id: row.id,
+      addedAt: row.addedAt,
+      movie: row.movieId ? toMedia(byId.get(row.movieId)) : null,
+      episode:
+        episode && show
+          ? {
+              id: episode.id,
+              name: episode.name,
+              seasonNumber: episode.seasonNumber,
+              episodeNumber: episode.episodeNumber,
+              showId: show.id,
+              showName: show.name,
+            }
+          : null,
+    };
+  });
 }

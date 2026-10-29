@@ -317,6 +317,48 @@ export const rateCounters = pgTable("rate_counters", {
   hits: integer("hits").notNull(),
 });
 
+export type ImportUnmatched = {
+  title: string;
+  year: number | null;
+  reason: string;
+};
+
+export type ImportErrorReport = {
+  parser: "import_v1";
+  failure: string | null;
+  unmatched: ImportUnmatched[];
+  counts: {
+    plays: number;
+    ratings: number;
+    watchlist: number;
+    lists: number;
+    list_items: number;
+    shelf: number;
+    notes_skipped: number;
+  };
+  files: { name: string; reason: string }[];
+};
+
+export const importJobs = pgTable(
+  "import_jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    status: text("status").notNull(),
+    parser: text("parser").notNull().default("import_v1"),
+    errorReport: jsonb("error_report").$type<ImportErrorReport>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("import_jobs_user_created_idx").on(table.userId, table.createdAt),
+    check("import_jobs_status_chk", sql`${table.status} in ('queued', 'running', 'finished', 'failed')`),
+    check("import_jobs_parser_chk", sql`${table.parser} = 'import_v1'`),
+  ],
+);
+
 export type TitleKind = "movie" | "show";
 export type PlaySource = "manual" | "bulk" | "playback" | "import";
 export type RatingSubject = "movie" | "show" | "season" | "episode";
