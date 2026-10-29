@@ -10,7 +10,8 @@ function sourceLabel(source: string) {
   if (source === "manual") return "logged";
   if (source === "bulk") return "season";
   if (source === "playback") return "playback";
-  return source;
+  if (source === "import") return "imported";
+  return "logged";
 }
 
 export default async function HistoryPage({

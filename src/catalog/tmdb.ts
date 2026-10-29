@@ -304,6 +304,61 @@ export async function fetchShow(tmdbId: number): Promise<{ title: MappedTitle; s
   };
 }
 
+const findPayload = z.object({
+  movie_results: z.array(z.object({ id: z.number().int() })).optional(),
+  tv_results: z.array(z.object({ id: z.number().int() })).optional(),
+  tv_episode_results: z
+    .array(
+      z.object({
+        id: z.number().int(),
+        show_id: z.number().int(),
+        season_number: z.number().int(),
+        episode_number: z.number().int(),
+      }),
+    )
+    .optional(),
+  tv_season_results: z
+    .array(
+      z.object({
+        id: z.number().int(),
+        show_id: z.number().int(),
+        season_number: z.number().int(),
+      }),
+    )
+    .optional(),
+});
+
+export type ImdbFind = {
+  movieTmdbId: number | null;
+  showTmdbId: number | null;
+  episode: { showTmdbId: number; seasonNumber: number; episodeNumber: number } | null;
+  season: { showTmdbId: number; seasonNumber: number } | null;
+};
+
+export async function findByImdb(imdbId: string): Promise<ImdbFind | null> {
+  if (!/^tt\d{5,12}$/.test(imdbId)) return null;
+  const raw = await tmdbGet(`/3/find/${imdbId}`, { external_source: "imdb_id" });
+  if (raw === null) return null;
+  const found = parse(findPayload, raw);
+  const movie = found.movie_results?.[0];
+  const show = found.tv_results?.[0];
+  const episode = found.tv_episode_results?.[0];
+  const season = found.tv_season_results?.[0];
+  if (!movie && !show && !episode && !season) return null;
+  return {
+    movieTmdbId: movie?.id ?? null,
+    showTmdbId: show?.id ?? episode?.show_id ?? season?.show_id ?? null,
+    episode: episode
+      ? {
+          showTmdbId: episode.show_id,
+          seasonNumber: episode.season_number,
+          episodeNumber: episode.episode_number,
+        }
+      : null,
+    season: season ? { showTmdbId: season.show_id, seasonNumber: season.season_number } : null,
+  };
+}
+
 export async function fetchSeason(showTmdbId: number, seasonNumber: number): Promise<MappedSeason | null> {
   const raw = await tmdbGet(`/3/tv/${showTmdbId}/season/${seasonNumber}`, {});
   if (raw === null) return null;

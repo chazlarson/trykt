@@ -24,6 +24,12 @@ const messages: Record<string, string> = {
   season: "Season logged.",
   cleared: "Manual logs cleared.",
   removed: "Removed from the log.",
+  "import-size": "That file is over 50 MB.",
+  "import-type": "Upload a ZIP file.",
+  "import-busy": "An import is already running.",
+  "import-queued": "Import started. This page updates until it finishes.",
+  "import-failed": "Import failed. Try the file again.",
+  "import-rate": "Too many imports. Wait and try again.",
 };
 
 export type NoticeCode = keyof typeof messages;

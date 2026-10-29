@@ -5,6 +5,7 @@ import { getDb } from "../db";
 beforeEach(async () => {
   await getDb().execute(sql`
     truncate table
+      import_jobs,
       list_items,
       lists,
       plays,
