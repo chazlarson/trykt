@@ -123,7 +123,7 @@ async function applyRatings(
 async function matchRating(item: RatingItem, resolver: Resolver): Promise<Match> {
   if (item.subject === "movie") return resolver.movie(item.ids, item);
   if (item.subject === "show") return resolver.show(item.ids, item);
-  if (item.subject === "season") return resolver.season(item.ids, item.seasonNumber ?? 0, item.seasonTmdbId, item);
+  if (item.subject === "season") return resolver.season(item.ids, item.seasonNumber ?? 0, item);
   return resolver.episode(item.ids, item.seasonNumber ?? 0, item.episodeNumber ?? 0, item.episodeIds, item);
 }
 

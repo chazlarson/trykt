@@ -6,7 +6,14 @@ import { parseExportZip, ZipRejected } from "./parser";
 import { createCatalogResolver } from "./resolve";
 import { importZipPath, loadImport, markFailed, markFinished, markRunning } from "./store";
 
-export async function runImportJob(jobId: string) {
+export type ImportAttempt = {
+  retryCount: number;
+  retryLimit: number;
+};
+
+const EXHAUSTED = "Import failed. Try the file again.";
+
+export async function runImportJob(jobId: string, attempt: ImportAttempt = { retryCount: 0, retryLimit: 0 }) {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set.");
   const sql = postgres(url, { max: 1 });
@@ -15,14 +22,14 @@ export async function runImportJob(jobId: string) {
     const [row] = await sql<{ locked: boolean }[]>`select pg_try_advisory_lock(hashtextextended(${jobId}, 0)) as locked`;
     locked = Boolean(row?.locked);
     if (!locked) return;
-    await runUnlocked(jobId);
+    await runUnlocked(jobId, attempt);
   } finally {
     if (locked) await sql`select pg_advisory_unlock(hashtextextended(${jobId}, 0))`;
     await sql.end({ timeout: 5 });
   }
 }
 
-async function runUnlocked(jobId: string) {
+async function runUnlocked(jobId: string, attempt: ImportAttempt) {
   const job = await loadImport(jobId);
   if (!job || job.status === "finished" || job.status === "failed") return;
   const file = importZipPath(jobId);
@@ -44,7 +51,9 @@ async function runUnlocked(jobId: string) {
       remove = true;
       return;
     }
-    throw error;
+    if (attempt.retryCount < attempt.retryLimit) throw error;
+    await markFailed(jobId, EXHAUSTED);
+    remove = true;
   } finally {
     if (remove) await rm(file, { force: true });
   }

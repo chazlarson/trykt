@@ -1,6 +1,6 @@
 import { PgBoss } from "pg-boss";
 import { runDailyRefresh, runWeeklyRefresh } from "./catalog/refresh";
-import { runImportJob } from "./import/job";
+import { runImportJob, type ImportAttempt } from "./import/job";
 import { IMPORT_QUEUE } from "./import/queue";
 import { interruptedJobIds } from "./import/store";
 import { loadEnvFile } from "./load-env";
@@ -23,10 +23,11 @@ async function main() {
   await boss.createQueue(DAILY, { retryLimit: 2, retryDelay: 60 });
   await boss.createQueue(WEEKLY, { retryLimit: 2, retryDelay: 60 });
   await boss.createQueue(IMPORT_QUEUE);
-  await boss.work<{ jobId: string }>(IMPORT_QUEUE, async (jobs) => {
+  await boss.work<{ jobId: string }, void, { includeMetadata: true }>(IMPORT_QUEUE, { includeMetadata: true }, async (jobs) => {
     for (const job of jobs) {
       if (!job.data?.jobId) continue;
-      await runImportJob(job.data.jobId);
+      const attempt: ImportAttempt = { retryCount: job.retryCount, retryLimit: job.retryLimit };
+      await runImportJob(job.data.jobId, attempt);
     }
   });
   for (const jobId of await interruptedJobIds()) {

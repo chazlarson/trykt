@@ -6,6 +6,7 @@ import { deleteUserAccount } from "../account";
 import { fetchMovie, fetchSeason, fetchShow, findByImdb } from "../catalog/tmdb";
 import { getDb } from "../db";
 import { episodes, importJobs, lists, plays, ratings, seasons, shelfItems, titles, users, watchlistItems } from "../db/schema";
+import * as apply from "./apply";
 import { applyImport } from "./apply";
 import { runImportJob } from "./job";
 import { parseExportZip } from "./parser";
@@ -238,5 +239,78 @@ describe("applyImport", () => {
     expect(job?.errorReport?.failure).toMatch(/leaves the archive/);
     expect(existsSync(importZipPath(jobId))).toBe(false);
     expect(await getDb().select().from(plays)).toEqual([]);
+  });
+
+  it("stores the season id TMDB returns for that show, not the id in the file", async () => {
+    vi.mocked(fetchShow).mockResolvedValue({
+      title: {
+        kind: "show",
+        tmdbId: 1396,
+        imdbId: null,
+        name: "Example Show",
+        year: 2008,
+        overview: null,
+        posterPath: null,
+        backdropPath: null,
+        runtimeMin: null,
+        status: null,
+      },
+      seasons: [{ tmdbId: 4242, seasonNumber: 1, name: "Season 1" }],
+    });
+    const userId = await user("season");
+    const parsed = parseExportZip(
+      zipOf({
+        "ratings-seasons.json": [
+          { rating: 9, season: { number: 1, ids: { tmdb: 3572 } }, show: { title: "Example Show", year: 2008, ids: { tmdb: 1396 } } },
+        ],
+      }),
+    );
+    const report = await applyImport(userId, parsed, createCatalogResolver());
+    expect(report.counts.ratings).toBe(1);
+    expect(fetchShow).toHaveBeenCalledWith(1396);
+    const [season] = await getDb().select().from(seasons);
+    expect(season).toMatchObject({ seasonNumber: 1, tmdbId: 4242, name: "Season 1" });
+  });
+
+  it("does not write a season row when the show cannot confirm that season", async () => {
+    const userId = await user("unconfirmed");
+    const parsed = parseExportZip(
+      zipOf({
+        "ratings-seasons.json": [
+          { rating: 9, season: { number: 1, ids: { tmdb: 3572 } }, show: { title: "Example Show", year: 2008, ids: { tmdb: 1396 } } },
+        ],
+      }),
+    );
+    const report = await applyImport(userId, parsed, createCatalogResolver());
+    expect(report.counts.ratings).toBe(0);
+    expect(report.unmatched.map((row) => row.reason)).toContain("TMDB returned an error.");
+    expect(await getDb().select().from(seasons)).toEqual([]);
+  });
+
+  it("keeps the import retryable, then fails it and deletes the file on the last attempt", async () => {
+    const userId = await user("stuck");
+    const bytes = zipOf({
+      "watched-history-1.json": [
+        { watched_at: "2014-01-01T00:00:00.000Z", type: "movie", movie: { title: "Paper Moon", year: 1973, ids: { tmdb: 18131 } } },
+      ],
+    });
+    const jobId = await acceptImport(userId, bytes);
+    const spy = vi.spyOn(apply, "applyImport").mockRejectedValue(new Error("database unavailable"));
+    try {
+      await expect(runImportJob(jobId, { retryCount: 0, retryLimit: 2 })).rejects.toThrow("database unavailable");
+      const mid = await importForOwner(userId, jobId);
+      expect(mid?.status).toBe("running");
+      expect(existsSync(importZipPath(jobId))).toBe(true);
+      await expect(acceptImport(userId, bytes)).rejects.toMatchObject({ code: "import-busy" });
+      await runImportJob(jobId, { retryCount: 2, retryLimit: 2 });
+    } finally {
+      spy.mockRestore();
+    }
+    const done = await importForOwner(userId, jobId);
+    expect(done?.status).toBe("failed");
+    expect(done?.errorReport?.failure).toBe("Import failed. Try the file again.");
+    expect(existsSync(importZipPath(jobId))).toBe(false);
+    const next = await acceptImport(userId, bytes);
+    expect(next).not.toBe(jobId);
   });
 });

@@ -10,7 +10,7 @@ export type Match = { ok: true; id: string } | { ok: false; reason: string };
 export type Resolver = {
   movie(ids: Ids, hint: Hint): Promise<Match>;
   show(ids: Ids, hint: Hint): Promise<Match>;
-  season(ids: Ids, seasonNumber: number, seasonTmdbId: number | null, hint: Hint): Promise<Match>;
+  season(ids: Ids, seasonNumber: number, hint: Hint): Promise<Match>;
   episode(ids: Ids, seasonNumber: number, episodeNumber: number, episodeIds: Ids, hint: Hint): Promise<Match>;
 };
 
@@ -67,16 +67,12 @@ export function createCatalogResolver(): Resolver {
       const id = await ensureTitle("show", resolved.tmdbId, ids.imdbId, hint, titlesByTmdb);
       return { ok: true, id };
     },
-    async season(ids, seasonNumber, seasonTmdbId, hint) {
+    async season(ids, seasonNumber, hint) {
       const resolved = await showTmdb(ids, { tmdbId: null, imdbId: null });
       if (!resolved.ok) return resolved;
       const showId = await ensureTitle("show", resolved.tmdbId, ids.imdbId, hint, titlesByTmdb);
       const existing = await findSeason(showId, seasonNumber);
       if (existing) return { ok: true, id: existing };
-      if (seasonTmdbId) {
-        const id = await saveSeason(showId, seasonNumber, seasonTmdbId, `Season ${seasonNumber}`);
-        return { ok: true, id };
-      }
       try {
         const detail = await fetchShow(resolved.tmdbId);
         const season = detail?.seasons.find((item) => item.seasonNumber === seasonNumber);
