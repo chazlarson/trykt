@@ -14,21 +14,13 @@ export async function showsDueForDailyRefresh(): Promise<string[]> {
   return ids(sql`
     select distinct t.id
     from titles t
-    join episodes e on e.show_id = t.id
-    join plays p on p.episode_id = e.id
     where t.kind = 'show'
       and t.status in ('Returning Series', 'In Production')
       and exists (
         select 1
-        from episodes n
-        where n.show_id = t.id
-          and n.season_number > 0
-          and (n.air_date is null or n.air_date <= current_date)
-          and not exists (
-            select 1 from plays p2
-            where p2.episode_id = n.id
-              and p2.user_id = p.user_id
-          )
+        from episodes e
+        join plays p on p.episode_id = e.id
+        where e.show_id = t.id
       )
   `);
 }

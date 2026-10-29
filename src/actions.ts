@@ -17,14 +17,6 @@ import {
 } from "./library";
 import { logMutation } from "./log";
 import { clearManualEpisodePlays, logEpisode, logMovie, logSeason, removePlay } from "./plays";
-import {
-  clientAddress,
-  LOGIN_LIMIT,
-  LOGIN_WINDOW_SECONDS,
-  SIGNUP_LIMIT,
-  SIGNUP_WINDOW_SECONDS,
-  takeToken,
-} from "./rate-limit";
 import { fail, redirectTo, safePath } from "./redirects";
 import { requireUser, usernameOf } from "./session";
 import { watchedAtFrom } from "./time";
@@ -56,12 +48,6 @@ export async function signUpAction(formData: FormData) {
   const password = passwordSchema.safeParse(field(formData, "password"));
   if (!username.success || !email.success || !password.success) redirectTo("/sign-up", "fields", "error");
   const headerList = await headers();
-  const allowed = await takeToken(
-    `signup:ip:${clientAddress(headerList)}`,
-    SIGNUP_WINDOW_SECONDS,
-    SIGNUP_LIMIT,
-  );
-  if (!allowed) redirectTo("/sign-up", "rate", "error");
   try {
     const body = {
       name: username.data,
@@ -74,8 +60,8 @@ export async function signUpAction(formData: FormData) {
       body,
       headers: headerList,
     });
-  } catch {
-    redirectTo("/sign-up", "taken", "error");
+  } catch (error) {
+    redirectTo("/sign-up", statusCode(error) === 429 ? "rate" : "taken", "error");
   }
   redirectTo("/verify", "signed-up");
 }
@@ -85,15 +71,14 @@ export async function signInAction(formData: FormData) {
   const password = passwordSchema.safeParse(field(formData, "password"));
   if (!email.success || !password.success) redirectTo("/sign-in", "fields", "error");
   const headerList = await headers();
-  const allowed = await takeToken(`login:ip:${clientAddress(headerList)}`, LOGIN_WINDOW_SECONDS, LOGIN_LIMIT);
-  if (!allowed) redirectTo("/sign-in", "rate", "error");
   try {
     await auth.api.signInEmail({
       body: { email: email.data, password: password.data },
       headers: headerList,
     });
   } catch (error) {
-    redirectTo("/sign-in", statusCode(error) === 403 ? "verify" : "sign-in", "error");
+    const status = statusCode(error);
+    redirectTo("/sign-in", status === 429 ? "rate" : status === 403 ? "verify" : "sign-in", "error");
   }
   redirectTo("/", undefined);
 }
@@ -118,15 +103,13 @@ export async function forgotPasswordAction(formData: FormData) {
   const email = emailSchema.safeParse(field(formData, "email").trim().toLowerCase());
   if (!email.success) redirectTo("/forgot-password", "fields", "error");
   const headerList = await headers();
-  const allowed = await takeToken(`login:ip:${clientAddress(headerList)}`, LOGIN_WINDOW_SECONDS, LOGIN_LIMIT);
-  if (!allowed) redirectTo("/forgot-password", "rate", "error");
   try {
     await auth.api.requestPasswordReset({
       body: { email: email.data, redirectTo: "/reset-password" },
       headers: headerList,
     });
-  } catch {
-    redirectTo("/forgot-password", "password", "error");
+  } catch (error) {
+    redirectTo("/forgot-password", statusCode(error) === 429 ? "rate" : "password", "error");
   }
   redirectTo("/forgot-password", "reset-sent");
 }
@@ -139,9 +122,10 @@ export async function resetPasswordAction(formData: FormData) {
   try {
     await auth.api.resetPassword({
       body: { token, newPassword: password.data },
+      headers: await headers(),
     });
-  } catch {
-    redirectTo(back, "password", "error");
+  } catch (error) {
+    redirectTo(back, statusCode(error) === 429 ? "rate" : "password", "error");
   }
   redirectTo("/sign-in", "password-set");
 }

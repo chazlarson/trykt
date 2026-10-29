@@ -1,9 +1,18 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { betterAuth } from "better-auth";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
 import { accounts, sessions, users, verifications } from "./db/schema";
 import { getDb } from "./db";
 import { deliverAuthMail } from "./mail";
+import {
+  clientAddress,
+  LOGIN_LIMIT,
+  LOGIN_WINDOW_SECONDS,
+  SIGNUP_LIMIT,
+  SIGNUP_WINDOW_SECONDS,
+  takeToken,
+} from "./rate-limit";
 
 function authSecret(): string {
   const secret = process.env.BETTER_AUTH_SECRET;
@@ -69,6 +78,26 @@ export const auth = betterAuth({
   },
   rateLimit: {
     enabled: false,
+  },
+  hooks: {
+    before: createAuthMiddleware(async (ctx) => {
+      const limit =
+        ctx.path === "/sign-up/email"
+          ? { bucket: "signup", windowSeconds: SIGNUP_WINDOW_SECONDS, max: SIGNUP_LIMIT }
+          : ctx.path === "/sign-in/email" ||
+              ctx.path === "/request-password-reset" ||
+              ctx.path === "/reset-password"
+            ? { bucket: "login", windowSeconds: LOGIN_WINDOW_SECONDS, max: LOGIN_LIMIT }
+            : null;
+      if (!limit) return;
+      const headers = ctx.headers instanceof Headers ? ctx.headers : new Headers();
+      const allowed = await takeToken(
+        `${limit.bucket}:ip:${clientAddress(headers)}`,
+        limit.windowSeconds,
+        limit.max,
+      );
+      if (!allowed) throw new APIError("TOO_MANY_REQUESTS", { message: "Too many attempts." });
+    }),
   },
   advanced: {
     database: {
