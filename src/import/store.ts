@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { and, desc, eq, inArray } from "drizzle-orm";
+import postgres from "postgres";
 import { AppError } from "../errors";
 import { getDb } from "../db";
 import { importJobs, type ImportErrorReport } from "../db/schema";
@@ -117,11 +118,16 @@ const CLEARED = "Import cleared.";
 
 export async function importsToResume(): Promise<string[]> {
   const rows = await getDb()
-    .select({ id: importJobs.id })
+    .select({ id: importJobs.id, cancelRequested: importJobs.cancelRequested })
     .from(importJobs)
     .where(inArray(importJobs.status, ["queued", "running"]));
   const resume: string[] = [];
   for (const row of rows) {
+    if (row.cancelRequested) {
+      await markFailed(row.id, CLEARED);
+      await deleteImportFiles([row.id]);
+      continue;
+    }
     if (!existsSync(importZipPath(row.id))) {
       await markFailed(row.id, REMOVED);
       continue;
@@ -131,7 +137,7 @@ export async function importsToResume(): Promise<string[]> {
   if (resume.length > 0) {
     await getDb()
       .update(importJobs)
-      .set({ status: "queued", progressDone: 0, progressTotal: 0 })
+      .set({ status: "queued", progressDone: 0, progressTotal: 0, cancelRequested: false })
       .where(and(inArray(importJobs.id, resume), inArray(importJobs.status, ["queued", "running"])));
   }
   return resume;
@@ -142,10 +148,50 @@ export async function clearImports(userId: string): Promise<string[]> {
     .select({ id: importJobs.id })
     .from(importJobs)
     .where(and(eq(importJobs.userId, userId), inArray(importJobs.status, ["queued", "running"])));
-  const ids = rows.map((row) => row.id);
-  for (const id of ids) await markFailed(id, CLEARED);
-  await deleteImportFiles(ids);
-  return ids;
+  for (const row of rows) {
+    await withJobLock(
+      row.id,
+      async () => {
+        await getDb()
+          .update(importJobs)
+          .set({ cancelRequested: true })
+          .where(and(eq(importJobs.id, row.id), inArray(importJobs.status, ["queued", "running"])));
+      },
+      async () => {
+        await markFailed(row.id, CLEARED);
+        await deleteImportFiles([row.id]);
+      },
+    );
+  }
+  return rows.map((row) => row.id);
+}
+
+export async function failClearedImport(jobId: string) {
+  const current = await loadImport(jobId);
+  if (!current || (current.status !== "queued" && current.status !== "running")) return;
+  await markFailed(jobId, CLEARED);
+}
+
+async function withJobLock(jobId: string, whenBusy: () => Promise<void>, whenIdle: () => Promise<void>) {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    await whenIdle();
+    return;
+  }
+  const sql = postgres(url, { max: 1 });
+  let locked = false;
+  try {
+    const [row] = await sql<{ locked: boolean }[]>`select pg_try_advisory_lock(hashtextextended(${jobId}, 0)) as locked`;
+    locked = Boolean(row?.locked);
+    if (!locked) {
+      await whenBusy();
+      return;
+    }
+    await whenIdle();
+  } finally {
+    if (locked) await sql`select pg_advisory_unlock(hashtextextended(${jobId}, 0))`;
+    await sql.end({ timeout: 5 });
+  }
 }
 
 export async function deleteImportFiles(jobIds: string[]) {

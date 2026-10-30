@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import postgres from "postgres";
-import { applyImport } from "./apply";
+import { applyImport, ImportStopped } from "./apply";
 import { parseExportZip, ZipRejected } from "./parser";
 import { createCatalogResolver } from "./resolve";
 import {
   deleteImportFiles,
+  failClearedImport,
   importZipPath,
   importsToResume,
   loadImport,
@@ -51,15 +52,22 @@ async function runUnlocked(jobId: string, attempt: ImportAttempt) {
   try {
     const bytes = new Uint8Array(await readFile(file));
     const parsed = parseExportZip(bytes);
-    const report = await applyImport(job.userId, parsed, createCatalogResolver(), progressFor(jobId));
+    const report = await applyImport(job.userId, parsed, createCatalogResolver(), progressFor(jobId), () => stillOpen(jobId));
     if (!(await stillOpen(jobId))) {
+      await failClearedImport(jobId);
       remove = true;
       return;
     }
     await markFinished(jobId, report);
     remove = true;
   } catch (error) {
+    if (error instanceof ImportStopped) {
+      await failClearedImport(jobId);
+      remove = true;
+      return;
+    }
     if (!(await stillOpen(jobId))) {
+      await failClearedImport(jobId);
       remove = true;
       return;
     }
@@ -92,7 +100,7 @@ export async function resumeImports(enqueue: (jobId: string) => Promise<string |
 
 async function stillOpen(jobId: string): Promise<boolean> {
   const current = await loadImport(jobId);
-  return current?.status === "queued" || current?.status === "running";
+  return Boolean(current && (current.status === "queued" || current.status === "running") && !current.cancelRequested);
 }
 
 function progressFor(jobId: string) {

@@ -351,6 +351,7 @@ export const importJobs = pgTable(
     errorReport: jsonb("error_report").$type<ImportErrorReport>(),
     progressDone: integer("progress_done").notNull().default(0),
     progressTotal: integer("progress_total").notNull().default(0),
+    cancelRequested: boolean("cancel_requested").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },

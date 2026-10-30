@@ -8,7 +8,7 @@ import { fetchMovie, fetchSeason, fetchShow, findByImdb } from "../catalog/tmdb"
 import { getDb } from "../db";
 import { episodes, importJobs, lists, plays, ratings, seasons, shelfItems, titles, users, watchlistItems } from "../db/schema";
 import * as apply from "./apply";
-import { applyImport, importMeasure } from "./apply";
+import { applyImport, ImportStopped, importMeasure } from "./apply";
 import { resumeImports, runImportJob } from "./job";
 import { parseExportZip } from "./parser";
 import { createCatalogResolver } from "./resolve";
@@ -416,5 +416,83 @@ describe("applyImport", () => {
     expect(await importForOwner(userId, jobId)).toMatchObject({ status: "failed" });
     const next = await acceptImport(userId, bytes);
     expect(next).not.toBe(jobId);
+  });
+
+  it("stops later rows once a running import is cleared", async () => {
+    const userId = await user("partial");
+    const parsed = parseExportZip(
+      zipOf({
+        "watched-history-1.json": [
+          { watched_at: "2014-01-01T00:00:00.000Z", type: "movie", movie: { title: "Paper Moon", year: 1973, ids: { tmdb: 18131 } } },
+          { watched_at: "2014-01-02T00:00:00.000Z", type: "movie", movie: { title: "Known", year: 1999, ids: { tmdb: 550 } } },
+        ],
+      }),
+    );
+    let checks = 0;
+    await expect(
+      applyImport(userId, parsed, createCatalogResolver(), undefined, async () => {
+        checks += 1;
+        return checks === 1;
+      }),
+    ).rejects.toBeInstanceOf(ImportStopped);
+    const playRows = await getDb().select().from(plays).where(eq(plays.userId, userId));
+    expect(playRows).toHaveLength(1);
+    expect(checks).toBe(2);
+  });
+
+  it("keeps the account busy until a cleared import stops writing", async () => {
+    const userId = await user("held");
+    const bytes = zipOf({
+      "watched-history-1.json": [
+        { watched_at: "2014-01-01T00:00:00.000Z", type: "movie", movie: { title: "Paper Moon", year: 1973, ids: { tmdb: 18131 } } },
+        { watched_at: "2014-01-02T00:00:00.000Z", type: "movie", movie: { title: "Known", year: 1999, ids: { tmdb: 550 } } },
+      ],
+    });
+    const jobId = await acceptImport(userId, bytes);
+    const real = apply.applyImport;
+    let sawRunning = false;
+    let stayedBusy = false;
+    const spy = vi.spyOn(apply, "applyImport").mockImplementation(async (...args) => {
+      await clearImports(userId);
+      const mid = await importForOwner(userId, jobId);
+      sawRunning = mid?.status === "running" && mid.cancelRequested === true;
+      try {
+        await acceptImport(userId, bytes);
+      } catch (error) {
+        stayedBusy = Boolean(error && typeof error === "object" && "code" in error && error.code === "import-busy");
+      }
+      return real(...args);
+    });
+    try {
+      await runImportJob(jobId);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sawRunning).toBe(true);
+    expect(stayedBusy).toBe(true);
+    const done = await importForOwner(userId, jobId);
+    expect(done).toMatchObject({ status: "failed", errorReport: expect.objectContaining({ failure: "Import cleared." }) });
+    expect(existsSync(importZipPath(jobId))).toBe(false);
+    expect(await getDb().select().from(plays).where(eq(plays.userId, userId))).toEqual([]);
+    const next = await acceptImport(userId, bytes);
+    expect(next).not.toBe(jobId);
+  });
+
+  it("does not resume an import that was cleared while its worker was busy", async () => {
+    const userId = await user("norestart");
+    const bytes = zipOf({
+      "watched-history-1.json": [
+        { watched_at: "2014-01-01T00:00:00.000Z", type: "movie", movie: { title: "Paper Moon", year: 1973, ids: { tmdb: 18131 } } },
+      ],
+    });
+    const jobId = await acceptImport(userId, bytes);
+    await markRunning(jobId);
+    await getDb().update(importJobs).set({ cancelRequested: true }).where(eq(importJobs.id, jobId));
+    expect(await importsToResume()).not.toContain(jobId);
+    expect(await importForOwner(userId, jobId)).toMatchObject({
+      status: "failed",
+      errorReport: expect.objectContaining({ failure: "Import cleared." }),
+    });
+    expect(existsSync(importZipPath(jobId))).toBe(false);
   });
 });
