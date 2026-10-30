@@ -1,6 +1,8 @@
+import { existsSync } from "node:fs";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { and, desc, eq, inArray } from "drizzle-orm";
+import postgres from "postgres";
 import { AppError } from "../errors";
 import { getDb } from "../db";
 import { importJobs, type ImportErrorReport } from "../db/schema";
@@ -76,6 +78,13 @@ export async function acceptImport(userId: string, bytes: Uint8Array): Promise<s
   return job.id;
 }
 
+export async function setImportProgress(jobId: string, done: number, total: number) {
+  await getDb()
+    .update(importJobs)
+    .set({ progressDone: done, progressTotal: total })
+    .where(and(eq(importJobs.id, jobId), eq(importJobs.status, "running")));
+}
+
 export async function markRunning(jobId: string) {
   await getDb()
     .update(importJobs)
@@ -87,7 +96,7 @@ export async function markFinished(jobId: string, report: ImportErrorReport) {
   await getDb()
     .update(importJobs)
     .set({ status: "finished", errorReport: report, finishedAt: new Date() })
-    .where(eq(importJobs.id, jobId));
+    .where(and(eq(importJobs.id, jobId), eq(importJobs.status, "running")));
 }
 
 export async function markFailed(jobId: string, failure: string) {
@@ -104,13 +113,85 @@ export async function markFailed(jobId: string, failure: string) {
     .where(and(eq(importJobs.id, jobId), inArray(importJobs.status, ["queued", "running", "failed"])));
 }
 
-export async function interruptedJobIds(): Promise<string[]> {
+const REMOVED = "The file was already removed.";
+const CLEARED = "Import cleared.";
+
+export async function importsToResume(): Promise<string[]> {
   const rows = await getDb()
-    .update(importJobs)
-    .set({ status: "queued" })
-    .where(eq(importJobs.status, "running"))
-    .returning({ id: importJobs.id });
+    .select({ id: importJobs.id, cancelRequested: importJobs.cancelRequested })
+    .from(importJobs)
+    .where(inArray(importJobs.status, ["queued", "running"]));
+  const resume: string[] = [];
+  for (const row of rows) {
+    if (row.cancelRequested) {
+      await markFailed(row.id, CLEARED);
+      await deleteImportFiles([row.id]);
+      continue;
+    }
+    if (!existsSync(importZipPath(row.id))) {
+      await markFailed(row.id, REMOVED);
+      continue;
+    }
+    resume.push(row.id);
+  }
+  if (resume.length > 0) {
+    await getDb()
+      .update(importJobs)
+      .set({ status: "queued", progressDone: 0, progressTotal: 0, cancelRequested: false })
+      .where(and(inArray(importJobs.id, resume), inArray(importJobs.status, ["queued", "running"])));
+  }
+  return resume;
+}
+
+export async function clearImports(userId: string): Promise<string[]> {
+  const rows = await getDb()
+    .select({ id: importJobs.id })
+    .from(importJobs)
+    .where(and(eq(importJobs.userId, userId), inArray(importJobs.status, ["queued", "running"])));
+  for (const row of rows) {
+    await withJobLock(
+      row.id,
+      async () => {
+        await getDb()
+          .update(importJobs)
+          .set({ cancelRequested: true })
+          .where(and(eq(importJobs.id, row.id), inArray(importJobs.status, ["queued", "running"])));
+      },
+      async () => {
+        await markFailed(row.id, CLEARED);
+        await deleteImportFiles([row.id]);
+      },
+    );
+  }
   return rows.map((row) => row.id);
+}
+
+export async function failClearedImport(jobId: string) {
+  const current = await loadImport(jobId);
+  if (!current || (current.status !== "queued" && current.status !== "running")) return;
+  await markFailed(jobId, CLEARED);
+}
+
+async function withJobLock(jobId: string, whenBusy: () => Promise<void>, whenIdle: () => Promise<void>) {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    await whenIdle();
+    return;
+  }
+  const sql = postgres(url, { max: 1 });
+  let locked = false;
+  try {
+    const [row] = await sql<{ locked: boolean }[]>`select pg_try_advisory_lock(hashtextextended(${jobId}, 0)) as locked`;
+    locked = Boolean(row?.locked);
+    if (!locked) {
+      await whenBusy();
+      return;
+    }
+    await whenIdle();
+  } finally {
+    if (locked) await sql`select pg_advisory_unlock(hashtextextended(${jobId}, 0))`;
+    await sql.end({ timeout: 5 });
+  }
 }
 
 export async function deleteImportFiles(jobIds: string[]) {
