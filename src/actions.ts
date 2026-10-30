@@ -10,6 +10,7 @@ import {
   addToWatchlist,
   clearRating,
   createList,
+  deleteList,
   removeListItem,
   removeShelfItem,
   removeWatchlistItem,
@@ -296,6 +297,21 @@ export async function addListItemAction(formData: FormData) {
     fail(path, error);
   }
   redirectTo(path, undefined);
+}
+
+export async function deleteListAction(formData: FormData) {
+  const session = await requireUser();
+  const listId = idSchema.safeParse(field(formData, "list_id"));
+  if (!listId.success) fail("/lists", null);
+  if (field(formData, "confirm") !== "yes") {
+    redirectTo(`/lists?confirm=${encodeURIComponent(listId.data)}`);
+  }
+  try {
+    await deleteList(session.user.id, listId.data);
+  } catch (error) {
+    fail("/lists", error);
+  }
+  redirectTo("/lists", "list-deleted");
 }
 
 export async function removeListItemAction(formData: FormData) {

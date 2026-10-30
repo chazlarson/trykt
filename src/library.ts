@@ -221,6 +221,19 @@ export async function removeListItem(userId: string, listId: string, itemId: str
   await db.delete(listItems).where(and(eq(listItems.id, itemId), eq(listItems.listId, listId)));
 }
 
+export async function deleteList(userId: string, listId: string) {
+  const db = getDb();
+  await db.transaction(async (tx) => {
+    const [owned] = await tx
+      .select({ id: lists.id })
+      .from(lists)
+      .where(and(eq(lists.id, listId), eq(lists.ownerId, userId)));
+    if (!owned) throw new AppError("list-missing");
+    await tx.delete(listItems).where(eq(listItems.listId, listId));
+    await tx.delete(lists).where(and(eq(lists.id, listId), eq(lists.ownerId, userId)));
+  });
+}
+
 async function subjectExists(subjectType: RatingSubject, subjectId: string) {
   const db = getDb();
   if (subjectType === "movie" || subjectType === "show") {

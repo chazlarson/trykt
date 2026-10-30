@@ -14,6 +14,7 @@ const messages: Record<string, string> = {
   stale: "Showing the saved copy.",
   missing: "That title is not in the log.",
   "list-missing": "That list is not in your log.",
+  "list-deleted": "List deleted.",
   listed: "That title is already on the list.",
   password: "Password reset failed. Request a new code.",
   confirmed: "Type your username to delete the account.",
